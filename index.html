@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SupportDesk AI</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0}
+  .wrap{max-width:900px;margin:0 auto;padding:16px}
+  h1{font-size:22px} h2{font-size:16px;margin:0 0 8px}
+  .card{background:#1e293b;border-radius:12px;padding:16px;margin-bottom:16px}
+  input,textarea,button{width:100%;padding:10px;margin:4px 0;border-radius:8px;border:1px solid #334155;background:#0f172a;color:inherit;font:inherit}
+  button{background:#6366f1;border:none;cursor:pointer;font-weight:600}
+  button.ghost{background:#334155} button.danger{background:#dc2626}
+  .row{display:flex;gap:8px} .row>*{flex:1}
+  .bot{display:flex;justify-content:space-between;align-items:center;padding:8px;border-radius:8px;cursor:pointer}
+  .bot:hover,.bot.active{background:#334155}
+  #messages{height:320px;overflow-y:auto;background:#0f172a;border-radius:8px;padding:8px}
+  .msg{padding:8px 12px;margin:6px 0;border-radius:12px;max-width:85%;white-space:pre-wrap}
+  .user{background:#6366f1;margin-left:auto} .assistant{background:#334155}
+  .hidden{display:none} .err{color:#f87171;font-size:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🤖 SupportDesk AI</h1>
+
+  <!-- AUTH -->
+  <div id="auth" class="card">
+    <h2>Login or create an account</h2>
+    <input id="email" type="email" placeholder="Email">
+    <input id="password" type="password" placeholder="Password (min 6 chars)">
+    <div class="row">
+      <button onclick="auth('login')">Login</button>
+      <button class="ghost" onclick="auth('register')">Register</button>
+    </div>
+    <div id="authErr" class="err"></div>
+  </div>
+
+  <!-- APP -->
+  <div id="app" class="hidden">
+    <div class="row" style="margin-bottom:8px">
+      <button class="ghost" onclick="logout()">Logout</button>
+    </div>
+    <div class="card">
+      <h2>Create a chatbot</h2>
+      <input id="botName" placeholder="Bot name (e.g. Pizza Palace Helper)">
+      <textarea id="botInstr" rows="3" placeholder="Instructions: business info, tone, FAQs, opening hours, refund policy..."></textarea>
+      <button onclick="createBot()">Create bot</button>
+    </div>
+    <div class="card">
+      <h2>Your bots</h2>
+      <div id="bots"></div>
+    </div>
+    <div class="card hidden" id="chatCard">
+      <h2 id="chatTitle">Chat</h2>
+      <div id="messages"></div>
+      <div class="row">
+        <input id="msgInput" placeholder="Type a message..." onkeydown="if(event.key==='Enter')send()">
+        <button style="flex:0 0 90px" onclick="send()">Send</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let token = localStorage.getItem("token");
+let activeBot = null;
+const $ = id => document.getElementById(id);
+
+async function api(path, method="GET", body=null){
+  const res = await fetch("/api"+path,{
+    method,
+    headers:{"Content-Type":"application/json",...(token?{Authorization:"Bearer "+token}:{})},
+    body: body?JSON.stringify(body):null
+  });
+  const data = await res.json().catch(()=>({}));
+  if(res.status===401 && token){ logout(); }
+  if(!res.ok) throw new Error(typeof data.detail==="string"?data.detail:"Request failed");
+  return data;
+}
+
+async function auth(kind){
+  try{
+    const data = await api("/"+kind,"POST",{email:$("email").value,password:$("password").value});
+    token = data.token; localStorage.setItem("token",token);
+    $("authErr").textContent=""; showApp();
+  }catch(e){ $("authErr").textContent=e.message; }
+}
+function logout(){ token=null; localStorage.removeItem("token"); activeBot=null;
+  $("app").classList.add("hidden"); $("auth").classList.remove("hidden"); }
+
+function showApp(){
+  $("auth").classList.add("hidden"); $("app").classList.remove("hidden"); loadBots();
+}
+
+async function loadBots(){
+  const bots = await api("/bots");
+  const box = $("bots"); box.innerHTML="";
+  if(!bots.length){ box.textContent="No bots yet. Create one above."; return; }
+  bots.forEach(b=>{
+    const div=document.createElement("div");
+    div.className="bot"+(activeBot&&activeBot.id===b.id?" active":"");
+    const name=document.createElement("span"); name.textContent=b.name;
+    const del=document.createElement("button");
+    del.textContent="Delete"; del.className="danger"; del.style.width="80px";
+    del.onclick=async e=>{e.stopPropagation(); await api("/bots/"+b.id,"DELETE");
+      if(activeBot&&activeBot.id===b.id){activeBot=null;$("chatCard").classList.add("hidden");}
+      loadBots();};
+    div.onclick=()=>openBot(b);
+    div.append(name,del); box.appendChild(div);
+  });
+}
+
+async function createBot(){
+  try{
+    await api("/bots","POST",{name:$("botName").value,instructions:$("botInstr").value});
+    $("botName").value=""; $("botInstr").value=""; loadBots();
+  }catch(e){ alert(e.message); }
+}
+
+async function openBot(b){
+  activeBot=b; $("chatCard").classList.remove("hidden");
+  $("chatTitle").textContent="Chat with "+b.name; $("messages").innerHTML="";
+  const msgs = await api(`/bots/${b.id}/messages`);
+  msgs.forEach(m=>addMsg(m.role,m.content)); loadBots();
+}
+
+function addMsg(role,text){
+  const d=document.createElement("div"); d.className="msg "+role; d.textContent=text;
+  $("messages").appendChild(d); $("messages").scrollTop=$("messages").scrollHeight;
+  return d;
+}
+
+async function send(){
+  const text=$("msgInput").value.trim(); if(!text||!activeBot) return;
+  $("msgInput").value=""; addMsg("user",text);
+  const typing=addMsg("assistant","...");
+  try{
+    const data=await api(`/bots/${activeBot.id}/chat`,"POST",{message:text});
+    typing.textContent=data.reply;
+  }catch(e){ typing.textContent="Error: "+e.message; }
+}
+
+if(token) showApp();
+</script>
+</body>
+</html>
